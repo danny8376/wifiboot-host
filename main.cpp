@@ -371,7 +371,29 @@ error:
 }
 
 //---------------------------------------------------------------------------------
-int sendGBAFile(in_addr_t dsaddr, char *buffer, size_t size) {
+gbaFooter genGBAFooter(size_t rom_size) {
+//---------------------------------------------------------------------------------
+	gbaFooter footer;
+	// it seems that wifiboot doesn't really care most of the structure
+	// only read (hardcode offset) rom_size, save_type and 4 cycle registers
+	memcpy(footer.magic, ".CAA", 4);
+	footer.fixed = 1;
+	footer.cfg_offset = 0x1000330UL;
+	footer.cfg_count = 2<<4;
+	footer.cfg_desc[1].flag = 1;
+	footer.cfg_desc[1].offset = 0x1000000UL;
+	footer.cfg_desc[1].size = 0x324;
+	footer.config[0].rom_size = rom_size;
+	footer.config[0].save_type = 0xF; // no save
+	footer.config[0].padding2[0] = 0xFF;
+	footer.config[0].padding2[1] = 0xFF;
+	footer.config[0].lcd_ghosting = 0xC0;
+	//memcpy(footer.config[0].video_lut,default_video_lut,0x300);
+	return footer;
+}
+
+//---------------------------------------------------------------------------------
+int sendGBAFile(in_addr_t dsaddr, char *buffer, size_t size, gbaFooter *footer) {
 //---------------------------------------------------------------------------------
 
 	int retval = 0;
@@ -395,7 +417,6 @@ int sendGBAFile(in_addr_t dsaddr, char *buffer, size_t size) {
 		return 1;
 	}
 
-	// TODO: fix non-working dummy gba sending
 	printf("Sending GBA header ...\n");
 	if (sendData(sock,0xC0,buffer)) {
 		fprintf(stderr,"Failed sending header\n");
@@ -407,6 +428,14 @@ int sendGBAFile(in_addr_t dsaddr, char *buffer, size_t size) {
 	info = genInfoBlock(F_GBA, 0, 0, 0);
 	if (sendData(sock,0x90,(char*)&info)) {
 		fprintf(stderr,"Failed sending info block\n");
+		retval = 1;
+		goto error;
+	}
+
+	printf("Sending gba vc footer ...\n");
+	footer->config[0].rom_size = size; // make sure size is correct
+	if (sendData(sock,0x360,(char*)footer)) {
+		fprintf(stderr,"Failed sending gba vc footer\n");
 		retval = 1;
 		goto error;
 	}
@@ -560,25 +589,62 @@ error:
 }
 
 //---------------------------------------------------------------------------------
+static int readGBAFooter(char* file, gbaFooter *footer, bool silent) {
+//---------------------------------------------------------------------------------
+	if (!silent) printf("Reading gba footer file...\n");
+
+	FILE *f = fopen(file,"rb");
+	if (f==0) {
+		fprintf(stderr,"Failed to open %s.\n",file);
+		return 1;
+	}
+
+	fseek(f,0,SEEK_END);
+	if (ftell(f) != 0x360) {
+		fprintf(stderr,"Footer should be 0x360 bytes.\n");
+	}
+	fseek(f,0,SEEK_SET);
+
+	if (fread((char*)footer,1,0x360,f) != 0x360){
+		fprintf(stderr,"Failed to read file\n");
+		fclose(f);
+		return 1;
+	}
+	fclose(f);
+
+	return 0;
+}
+
+//---------------------------------------------------------------------------------
+static int readGBAFooter(char* file, gbaFooter *footer) {
+//---------------------------------------------------------------------------------
+	return readGBAFooter(file, footer, false);
+}
+
+//---------------------------------------------------------------------------------
 int main(int argc, char **argv) {
 //---------------------------------------------------------------------------------
 	int res = 0;
 	char *address = NULL;
+	char *footerfile = NULL;
 	bool fb3dslink = false;
 	int c;
 
 	// wifiboot doesn't support address, it's mainly for 3dslink fallback
-	while ((c = getopt (argc, argv, "3a:")) != -1) {
+	while ((c = getopt (argc, argv, "3a:f:")) != -1) {
 		switch(c) {
 			case 'a':
 				fprintf (stderr, "Warning: wifiboot doesn't support direct address, it's for 3dslink fallback only.\n");
 				address = optarg;
 				break;
+			case 'f':
+				footerfile = optarg;
+				break;
 			case '3':
 				fb3dslink = true;
 				break;
 			case '?':
-				if (optopt == 'a')
+				if (optopt == 'a' || optopt == 'f')
 					fprintf (stderr, "Option -%c requires an argument.\n", optopt);
 				else if (isprint (optopt))
 					fprintf (stderr, "Unknown option `-%c'.\n", optopt);
@@ -667,7 +733,13 @@ int main(int argc, char **argv) {
 			res = sendNDSFile(dsaddr.s_addr,buffer);
 			break;
 		case F_GBA:
-			res = sendGBAFile(dsaddr.s_addr,buffer,size);
+			{
+				gbaFooter footer;
+				if (footerfile == NULL || readGBAFooter(footerfile,&footer) != 0) {
+					footer = genGBAFooter(size);
+				}
+				res = sendGBAFile(dsaddr.s_addr,buffer,size,&footer);
+			}
 			break;
 		case F_FIRM:
 			res = send3DSFirmFile(dsaddr.s_addr,buffer);
