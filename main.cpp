@@ -27,6 +27,7 @@ enum F_Type {
 	F_NDS,
 	F_GBA,
 	F_FIRM,
+	F_3DSX,
 	F_UNKNOWN
 };
 
@@ -186,6 +187,10 @@ F_Type getFileType(char *buffer) {
 
 	if (strncmp("FIRM", firmHdr->magic, strlen("FIRM")) == 0) {
 		return F_FIRM;
+	}
+
+	if (strncmp("3DSX", buffer, strlen("3DSX")) == 0) {
+		return F_3DSX;
 	}
 
 	if (gbaHdr->fixed == 0x96 && memcmp(gba_logo, gbaHdr->logo, 0xA0-0x04) == 0) {
@@ -509,25 +514,25 @@ error:
 //---------------------------------------------------------------------------------
 int main(int argc, char **argv) {
 //---------------------------------------------------------------------------------
+	int res = 0;
 	char *address = NULL;
+	bool fb3dslink = false;
 	int c;
 
-	// no address option as wifiboot doesn't support it
-	//while ((c = getopt (argc, argv, "a:")) != -1) {
-	while ((c = getopt (argc, argv, "")) != -1) {
+	// wifiboot doesn't support address, it's mainly for 3dslink fallback
+	while ((c = getopt (argc, argv, "3a:")) != -1) {
 		switch(c) {
-            /*
 			case 'a':
+				fprintf (stderr, "Warning: wifiboot doesn't support direct address, it's for 3dslink fallback only.\n");
 				address = optarg;
 				break;
-            */
+			case '3':
+				fb3dslink = true;
+				break;
 			case '?':
-                /*
 				if (optopt == 'a')
 					fprintf (stderr, "Option -%c requires an argument.\n", optopt);
 				else if (isprint (optopt))
-                */
-				if (isprint (optopt))
 					fprintf (stderr, "Unknown option `-%c'.\n", optopt);
 				else
 					fprintf (stderr, "Unknown option character `\\x%x'.\n",optopt);
@@ -538,7 +543,7 @@ int main(int argc, char **argv) {
 	char *file = argv[optind];
 	if (file == NULL) {
 		//fprintf(stderr,"Usage: %s [-a address] file\n", argv[0]);
-		fprintf(stderr,"Usage: %s file\n", argv[0]);
+		fprintf(stderr,"Usage: %s [-3] file\n", argv[0]);
 		return 1;
 	}
 	optind++;
@@ -596,28 +601,19 @@ int main(int argc, char **argv) {
 	fclose(f);
 
     F_Type type = getFileType(buffer);
+	if (type != F_FIRM && type != F_3DSX) fb3dslink = false;
 
 	struct in_addr dsaddr;
-	dsaddr.s_addr  =  INADDR_NONE;
+	dsaddr.s_addr = INADDR_NONE;
 
-	if (address == NULL) {
-		dsaddr = findDS(type);
-	
-		if (dsaddr.s_addr == INADDR_NONE) {
-			printf("No response from DS!\n");
-			return 1;
-		}
-		
-	} else {
-		dsaddr.s_addr = inet_addr(address);		
-	}
-	
+	dsaddr = findDS(type);
+
 	if (dsaddr.s_addr == INADDR_NONE) {
-		fprintf(stderr,"Invalid address\n");
+		printf("No response from (3)DS!\n");
+		if (fb3dslink) goto cleanup;
 		return 1;
 	}
 
-	int res = 0;
 	switch (type) {
 		case F_NDS:
 			res = sendNDSFile(dsaddr.s_addr,buffer);
@@ -633,10 +629,21 @@ int main(int argc, char **argv) {
 			res = 1;
 			break;
 	}
-	
+
+	fb3dslink = false;
+
+cleanup:
 #ifdef __WIN32__
 	WSACleanup ();
 #endif
+	if (fb3dslink) {
+		fprintf(stderr,"3dslink fallback enabled, run it\n");
+		if (address == NULL) {
+			execlp("3dslink","3dslink",file,NULL);
+		} else {
+			execlp("3dslink","3dslink","-a",address,file,NULL);
+		}
+	}
 	return res;
 }
 
