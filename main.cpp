@@ -17,9 +17,18 @@ typedef uint32_t in_addr_t;
 #endif
 
 #include "ndsheader.h"
+#include "gbaheader.h"
+#include "firmheader.h"
 
 char cmdbuf[3072];
 uint32_t cmdlen=0;
+
+enum F_Type {
+	F_NDS,
+	F_GBA,
+	F_FIRM,
+	F_UNKNOWN
+};
 
 //---------------------------------------------------------------------------------
 void shutdownSocket(int socket) {
@@ -80,11 +89,27 @@ void timeval_add (struct timeval *result, struct timeval *x, struct timeval *y) 
 }
 
 //---------------------------------------------------------------------------------
-static struct in_addr findDS() {
+static const char* getMess(F_Type type, bool a) {
+//---------------------------------------------------------------------------------
+	switch (type) {
+		case F_NDS:
+			return a ? "dsboot" : "bootds";
+		case F_GBA:
+			return a ? "gbaboot" : "bootgba";
+		case F_FIRM:
+			return a ? "3dsfirmboot": "bootfirm3ds";
+		default: // TODO: probably better to return early?
+			return a ? "nothingboot": "bootnothing";
+	}
+}
+
+//---------------------------------------------------------------------------------
+static struct in_addr findDS(F_Type type) {
 //---------------------------------------------------------------------------------
     struct sockaddr_in s, remote, rs;
 	char recvbuf[256];
-	char mess[] = "dsboot";
+	const char* mess = getMess(type, true);
+	const char* rmess = getMess(type, false);
 
 	int broadcastSock = socket(PF_INET, SOCK_DGRAM, 0);
 	if(broadcastSock < 0) perror("create send socket");
@@ -130,7 +155,7 @@ static struct in_addr findDS() {
 		socklen_t socklen = sizeof(remote);
 		len = recvfrom(recvSock,recvbuf,sizeof(recvbuf),0,(struct sockaddr *)&remote,&socklen);
 		if ( len != -1) {
-			if ( strncmp("bootds",recvbuf,strlen("bootds")) == 0) {
+			if ( strncmp(rmess,recvbuf,strlen(rmess)) == 0) {
 				break;
 			}
 		}
@@ -154,39 +179,33 @@ int sendData(int socket, int sendsize, char *buffer) {
 }
 
 //---------------------------------------------------------------------------------
-int sendNDSFile(in_addr_t dsaddr, char *ndsfile) {
+F_Type getFileType(char *buffer) {
+//---------------------------------------------------------------------------------
+	firmHeader *firmHdr = (firmHeader*)buffer;
+	gbaHeader *gbaHdr = (gbaHeader*)buffer;
+
+	if (strncmp("FIRM", firmHdr->magic, strlen("FIRM")) == 0) {
+		return F_FIRM;
+	}
+
+	if (gbaHdr->fixed == 0x96 && memcmp(gba_logo, gbaHdr->logo, 0xA0-0x04) == 0) {
+		return F_GBA;
+	}
+
+	return F_NDS; // TODO: any method to check?
+
+	//return F_UNKNOWN;
+}
+
+//---------------------------------------------------------------------------------
+int sendNDSFile(in_addr_t dsaddr, char *buffer) {
 //---------------------------------------------------------------------------------
 
 	int retval = 0;
-	struct ndsHeader *header;
+	ndsHeader *header;
 	char *arm9, *arm7;
 	int arm7size, arm9size;
 
-	FILE *nds = fopen(ndsfile,"rb");
-	if (nds==0) {
-		fprintf(stderr,"Failed to open %s.\n",ndsfile);
-		return 1;
-	}
-	
-	fseek(nds,0,SEEK_END);
-	size_t size = ftell(nds);
-	fseek(nds,0,SEEK_SET);
-	
-	char *buffer = (char*)malloc(size);
-	if (buffer == NULL) {
-		fprintf(stderr,"Failed to allocate file buffer\n");
-		fclose(nds);
-		return 1;
-	}
-
-	if (fread(buffer,1,size,nds) != size){
-		fprintf(stderr,"Failed to read file\n");
-		free(buffer);
-		fclose(nds);
-		return 1;
-	}
-	fclose(nds);
-	
 	int sock = socket(AF_INET,SOCK_STREAM,0);
 	if (sock < 0)  perror("create connection socket");
 
@@ -243,7 +262,7 @@ int sendNDSFile(in_addr_t dsaddr, char *ndsfile) {
 		}
 	}
 
-	header = (struct ndsHeader *)buffer;
+	header = (ndsHeader *)buffer;
 	arm7 = buffer + header->arm7_rom_offset;
 	arm9 = buffer + header->arm9_rom_offset;
 	
@@ -317,20 +336,198 @@ error:
 }
 
 //---------------------------------------------------------------------------------
+int sendGBAFile(in_addr_t dsaddr, char *buffer, size_t size) {
+//---------------------------------------------------------------------------------
+
+	int retval = 0;
+	//gbaHeader *header;
+
+	int sock = socket(AF_INET,SOCK_STREAM,0);
+	if (sock < 0)  perror("create connection socket");
+
+	struct sockaddr_in s;
+	memset(&s, '\0', sizeof(struct sockaddr_in));
+    s.sin_family = AF_INET;
+    s.sin_port = htons(17491);
+    s.sin_addr.s_addr = dsaddr;
+
+	if (connect(sock,(struct sockaddr *)&s,sizeof(s)) < 0 ) {
+		struct in_addr address;
+		address.s_addr = dsaddr;
+		fprintf(stderr,"Connection to %s failed",inet_ntoa(address));
+		free(buffer);
+		return 1;
+	}
+
+	// TODO: fix non-working dummy gba sending
+	printf("Sending GBA header ...\n");
+	if (sendData(sock,0xC0+0x90+0x360,buffer)) {
+		fprintf(stderr,"Failed sending header\n");
+		retval = 1;
+		goto error;
+	}
+
+	int response, errorcode;
+
+	if(recv(sock,(char*)&response,sizeof(response),0)!=sizeof(response)) {
+		fprintf(stderr,"Invalid response\n");
+		retval = 1;
+		goto error;
+	}
+
+	errorcode = response & 0x0f;
+
+	if(errorcode!=0) {
+		/*
+		switch(errorcode) {
+			case 1:
+				fprintf(stderr,"Invalid ARM9 address/length\n");
+				break;
+			case 2:
+				fprintf(stderr,"Invalid ARM7 address/length\n");
+				break;
+		}
+		*/
+		retval = 1;
+		goto error;
+	}
+
+	printf("Sending rom, %lu bytes\n",size);
+
+	if(sendData(sock,size,buffer)) {
+
+		fprintf(stderr,"Failed sending arm9 binary\n");
+		retval = 1;
+		goto error;
+	}
+
+	if(sendData(sock,cmdlen+4,cmdbuf)) {
+
+		fprintf(stderr,"Failed sending command line\n");
+		retval = 1;
+	}
+
+
+error:
+	shutdownSocket(sock);
+	free(buffer);
+	return retval;
+}
+
+//---------------------------------------------------------------------------------
+int send3DSFirmFile(in_addr_t dsaddr, char *buffer) {
+//---------------------------------------------------------------------------------
+
+	int retval = 0;
+	firmHeader *header;
+	char *section;
+	int sectionSize;
+
+	int sock = socket(AF_INET,SOCK_STREAM,0);
+	if (sock < 0)  perror("create connection socket");
+
+	struct sockaddr_in s;
+	memset(&s, '\0', sizeof(struct sockaddr_in));
+    s.sin_family = AF_INET;
+    s.sin_port = htons(17491);
+    s.sin_addr.s_addr = dsaddr;
+
+	if (connect(sock,(struct sockaddr *)&s,sizeof(s)) < 0 ) {
+		struct in_addr address;
+		address.s_addr = dsaddr;
+		fprintf(stderr,"Connection to %s failed",inet_ntoa(address));
+		free(buffer);
+		return 1;
+	}
+
+	printf("Sending 3DS Firm header ...\n");
+	if (sendData(sock,0x200+0x90,buffer)) {
+		fprintf(stderr,"Failed sending header\n");
+		retval = 1;
+		goto error;
+	}
+
+	int response, errorcode;
+
+	if(recv(sock,(char*)&response,sizeof(response),0)!=sizeof(response)) {
+		fprintf(stderr,"Invalid response\n");
+		retval = 1;
+		goto error;
+	}
+
+	errorcode = response & 0x0f;
+
+	if(errorcode!=0) {
+		fprintf(stderr,"Invalid header\n");
+		/*
+		switch(errorcode) {
+			case 1:
+				fprintf(stderr,"Invalid ARM9 address/length\n");
+				break;
+			case 2:
+				fprintf(stderr,"Invalid ARM7 address/length\n");
+				break;
+		}
+		*/
+		retval = 1;
+		goto error;
+	}
+
+	header = (firmHeader *)buffer;
+
+	for (int i=0; i<4; i++) {
+		section = buffer + header->section[i].offset;
+		sectionSize = header->section[i].size;
+
+		if (sectionSize == 0) continue;
+
+		printf("Sending section %d, %d bytes\n",i, sectionSize);
+
+		if(sendData(sock,sectionSize,section)) {
+
+			fprintf(stderr,"Failed sending section %d\n",i);
+			retval = 1;
+			goto error;
+
+		}
+	}
+
+
+	if(sendData(sock,cmdlen+4,cmdbuf)) {
+
+		fprintf(stderr,"Failed sending command line\n");
+		retval = 1;
+	}
+
+
+error:
+	shutdownSocket(sock);
+	free(buffer);
+	return retval;
+}
+
+//---------------------------------------------------------------------------------
 int main(int argc, char **argv) {
 //---------------------------------------------------------------------------------
 	char *address = NULL;
 	int c;
 
-	while ((c = getopt (argc, argv, "a:")) != -1) {
+	// no address option as wifiboot doesn't support it
+	//while ((c = getopt (argc, argv, "a:")) != -1) {
+	while ((c = getopt (argc, argv, "")) != -1) {
 		switch(c) {
+            /*
 			case 'a':
 				address = optarg;
 				break;
+            */
 			case '?':
+                /*
 				if (optopt == 'a')
 					fprintf (stderr, "Option -%c requires an argument.\n", optopt);
 				else if (isprint (optopt))
+                */
+				if (isprint (optopt))
 					fprintf (stderr, "Unknown option `-%c'.\n", optopt);
 				else
 					fprintf (stderr, "Unknown option character `\\x%x'.\n",optopt);
@@ -338,16 +535,17 @@ int main(int argc, char **argv) {
 		}
 	}
 	
-	char *ndsfile = argv[optind];
-	if (ndsfile == NULL) {
-		fprintf(stderr,"Usage: %s [-a address] ndsfile\n", argv[0]);
+	char *file = argv[optind];
+	if (file == NULL) {
+		//fprintf(stderr,"Usage: %s [-a address] file\n", argv[0]);
+		fprintf(stderr,"Usage: %s file\n", argv[0]);
 		return 1;
 	}
 	optind++;
 	memset(cmdbuf, '\0', sizeof(cmdbuf));
 	
 	strcpy(&cmdbuf[4],"dslink:/");
-	strcpy(&cmdbuf[12],ndsfile);
+	strcpy(&cmdbuf[12],file);
 
 	cmdlen = strlen(&cmdbuf[4]) + 5;
 
@@ -372,11 +570,38 @@ int main(int argc, char **argv) {
 	}
 #endif
 
+	FILE *f = fopen(file,"rb");
+	if (f==0) {
+		fprintf(stderr,"Failed to open %s.\n",file);
+		return 1;
+	}
+
+	fseek(f,0,SEEK_END);
+	size_t size = ftell(f);
+	fseek(f,0,SEEK_SET);
+
+	char *buffer = (char*)malloc(size);
+	if (buffer == NULL) {
+		fprintf(stderr,"Failed to allocate file buffer\n");
+		fclose(f);
+		return 1;
+	}
+
+	if (fread(buffer,1,size,f) != size){
+		fprintf(stderr,"Failed to read file\n");
+		free(buffer);
+		fclose(f);
+		return 1;
+	}
+	fclose(f);
+
+    F_Type type = getFileType(buffer);
+
 	struct in_addr dsaddr;
 	dsaddr.s_addr  =  INADDR_NONE;
 
 	if (address == NULL) {
-		dsaddr = findDS();
+		dsaddr = findDS(type);
 	
 		if (dsaddr.s_addr == INADDR_NONE) {
 			printf("No response from DS!\n");
@@ -392,7 +617,22 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
-	int res = sendNDSFile(dsaddr.s_addr,ndsfile);
+	int res = 0;
+	switch (type) {
+		case F_NDS:
+			res = sendNDSFile(dsaddr.s_addr,buffer);
+			break;
+		case F_GBA:
+			res = sendGBAFile(dsaddr.s_addr,buffer,size);
+			break;
+		case F_FIRM:
+			res = send3DSFirmFile(dsaddr.s_addr,buffer);
+			break;
+		default:
+			fprintf(stderr,"Unknown file type\n");
+			res = 1;
+			break;
+	}
 	
 #ifdef __WIN32__
 	WSACleanup ();

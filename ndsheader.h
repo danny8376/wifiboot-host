@@ -5,7 +5,7 @@
 
 #include "little.h"
 
-struct ndsHeader {
+typedef struct {
 	char title[0xC];
 	char gamecode[0x4];
 	char makercode[2];
@@ -134,7 +134,7 @@ struct ndsHeader {
 	unsigned char reserved5[2636];
 	unsigned char debug_args[0x180];
 	unsigned char rsa_signature[0x80];
-};
+} ndsHeader;
 
 
 #pragma pack()
