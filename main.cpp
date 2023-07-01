@@ -99,8 +99,8 @@ static const char* getMess(F_Type type, bool a) {
 			return a ? "gbaboot" : "bootgba";
 		case F_FIRM:
 			return a ? "3dsfirmboot": "bootfirm3ds";
-		default: // TODO: probably better to return early?
-			return a ? "nothingboot": "bootnothing";
+		default:
+			return NULL;
 	}
 }
 
@@ -111,6 +111,11 @@ static struct in_addr findDS(F_Type type) {
 	char recvbuf[256];
 	const char* mess = getMess(type, true);
 	const char* rmess = getMess(type, false);
+
+	if (mess == NULL || rmess == NULL) {
+		remote.sin_addr.s_addr = INADDR_NONE;
+		return remote.sin_addr;
+	}
 
 	int broadcastSock = socket(PF_INET, SOCK_DGRAM, 0);
 	if(broadcastSock < 0) perror("create send socket");
@@ -161,7 +166,7 @@ static struct in_addr findDS(F_Type type) {
 			}
 		}
 	}
-	if (timeout == 0) remote.sin_addr.s_addr =  INADDR_NONE;
+	if (timeout == 0) remote.sin_addr.s_addr = INADDR_NONE;
 	shutdownSocket(broadcastSock);
 	shutdownSocket(recvSock);
 	return remote.sin_addr;
@@ -609,7 +614,7 @@ int main(int argc, char **argv) {
 	dsaddr = findDS(type);
 
 	if (dsaddr.s_addr == INADDR_NONE) {
-		printf("No response from (3)DS!\n");
+		printf("No response from (3)DS or not supported file!\n");
 		if (fb3dslink) goto cleanup;
 		return 1;
 	}
@@ -625,7 +630,7 @@ int main(int argc, char **argv) {
 			res = send3DSFirmFile(dsaddr.s_addr,buffer);
 			break;
 		default:
-			fprintf(stderr,"Unknown file type\n");
+			fprintf(stderr,"Unsupported file!\n");
 			res = 1;
 			break;
 	}
