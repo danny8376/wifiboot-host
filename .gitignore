@@ -1,0 +1,6 @@
+build/
+wifiboot
+wifiboot.exe
+*.o
+*.d
+*.map
