@@ -19,6 +19,9 @@ typedef uint32_t in_addr_t;
 #include "ndsheader.h"
 #include "gbaheader.h"
 #include "firmheader.h"
+#include "wifibootheader.h"
+
+#define IS_TYPE_3DS(type) (type == F_FIRM || type == F_3DSX)
 
 char cmdbuf[3072];
 uint32_t cmdlen=0;
@@ -208,11 +211,25 @@ F_Type getFileType(char *buffer) {
 }
 
 //---------------------------------------------------------------------------------
+infoBlock genInfoBlock(F_Type type, size_t logo_size, size_t icon_size, size_t banner_size) {
+//---------------------------------------------------------------------------------
+	infoBlock info;
+	memcpy(info.id, "BootINFO", 8);
+	strcpy(info.uploader, "wifiboot-host v0");
+	// TODO: proper time?
+	info.logo_size = logo_size;
+	info.icon_size = IS_TYPE_3DS(type) ? icon_size : 0;
+	info.banner_size = IS_TYPE_3DS(type) ? banner_size : 0;
+	return info;
+}
+
+//---------------------------------------------------------------------------------
 int sendNDSFile(in_addr_t dsaddr, char *buffer) {
 //---------------------------------------------------------------------------------
 
 	int retval = 0;
 	ndsHeader *header;
+	infoBlock info;
 	char *arm9, *arm7;
 	int arm7size, arm9size;
 
@@ -234,12 +251,20 @@ int sendNDSFile(in_addr_t dsaddr, char *buffer) {
 	}
 	
 	printf("Sending NDS header ...\n");
-	if (sendData(sock,512,buffer)) {
+	if (sendData(sock,0x170,buffer)) {
 		fprintf(stderr,"Failed sending header\n");
 		retval = 1;
 		goto error;
 	}
 	
+	printf("Sending info block ...\n");
+	info = genInfoBlock(F_NDS, 0, 0, 0);
+	if (sendData(sock,0x90,(char*)&info)) {
+		fprintf(stderr,"Failed sending info block\n");
+		retval = 1;
+		goto error;
+	}
+
 	int response, errorcode;
 
 	if(recv(sock,(char*)&response,sizeof(response),0)!=sizeof(response)) {
@@ -351,6 +376,7 @@ int sendGBAFile(in_addr_t dsaddr, char *buffer, size_t size) {
 
 	int retval = 0;
 	//gbaHeader *header;
+	infoBlock info;
 
 	int sock = socket(AF_INET,SOCK_STREAM,0);
 	if (sock < 0)  perror("create connection socket");
@@ -371,8 +397,16 @@ int sendGBAFile(in_addr_t dsaddr, char *buffer, size_t size) {
 
 	// TODO: fix non-working dummy gba sending
 	printf("Sending GBA header ...\n");
-	if (sendData(sock,0xC0+0x90+0x360,buffer)) {
+	if (sendData(sock,0xC0,buffer)) {
 		fprintf(stderr,"Failed sending header\n");
+		retval = 1;
+		goto error;
+	}
+
+	printf("Sending info block ...\n");
+	info = genInfoBlock(F_GBA, 0, 0, 0);
+	if (sendData(sock,0x90,(char*)&info)) {
+		fprintf(stderr,"Failed sending info block\n");
 		retval = 1;
 		goto error;
 	}
@@ -430,6 +464,7 @@ int send3DSFirmFile(in_addr_t dsaddr, char *buffer) {
 
 	int retval = 0;
 	firmHeader *header;
+	infoBlock info;
 	char *section;
 	int sectionSize;
 
@@ -451,8 +486,16 @@ int send3DSFirmFile(in_addr_t dsaddr, char *buffer) {
 	}
 
 	printf("Sending 3DS Firm header ...\n");
-	if (sendData(sock,0x200+0x90,buffer)) {
+	if (sendData(sock,0x200,buffer)) {
 		fprintf(stderr,"Failed sending header\n");
+		retval = 1;
+		goto error;
+	}
+
+	printf("Sending info block ...\n");
+	info = genInfoBlock(F_FIRM, 0, 0, 0);
+	if (sendData(sock,0x90,(char*)&info)) {
+		fprintf(stderr,"Failed sending info block\n");
 		retval = 1;
 		goto error;
 	}
@@ -606,7 +649,7 @@ int main(int argc, char **argv) {
 	fclose(f);
 
     F_Type type = getFileType(buffer);
-	if (type != F_FIRM && type != F_3DSX) fb3dslink = false;
+	if (!IS_TYPE_3DS(type)) fb3dslink = false;
 
 	struct in_addr dsaddr;
 	dsaddr.s_addr = INADDR_NONE;
