@@ -213,7 +213,7 @@ F_Type getFileType(char *buffer) {
 //---------------------------------------------------------------------------------
 infoBlock genInfoBlock(F_Type type, size_t logo_size, size_t icon_size, size_t banner_size) {
 //---------------------------------------------------------------------------------
-	infoBlock info;
+	infoBlock info = {0};
 	memcpy(info.id, "BootINFO", 8);
 	strcpy(info.uploader, "wifiboot-host v0");
 	// TODO: proper time?
@@ -374,7 +374,7 @@ error:
 //---------------------------------------------------------------------------------
 gbaFooter genGBAFooter(size_t rom_size) {
 //---------------------------------------------------------------------------------
-	gbaFooter footer;
+	gbaFooter footer = {0};
 	// it seems that wifiboot doesn't really care most of the structure
 	// only read (hardcode offset) rom_size, save_type and 4 cycle registers
 	memcpy(footer.magic, ".CAA", 4);
