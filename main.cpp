@@ -276,6 +276,7 @@ int sendNDSFile(in_addr_t dsaddr, char *buffer) {
 	errorcode = response & 0x0f;
 
 	if(errorcode!=0) {
+		// it seems that wifiboot doesn't validate header properly?
 		switch(errorcode) {
 			case 1:
 				fprintf(stderr,"Invalid ARM9 address/length\n");
@@ -451,16 +452,7 @@ int sendGBAFile(in_addr_t dsaddr, char *buffer, size_t size, gbaFooter *footer) 
 	errorcode = response & 0x0f;
 
 	if(errorcode!=0) {
-		/*
-		switch(errorcode) {
-			case 1:
-				fprintf(stderr,"Invalid ARM9 address/length\n");
-				break;
-			case 2:
-				fprintf(stderr,"Invalid ARM7 address/length\n");
-				break;
-		}
-		*/
+		fprintf(stderr,"Invalid header/footer\n");
 		retval = 1;
 		goto error;
 	}
@@ -541,16 +533,6 @@ int send3DSFirmFile(in_addr_t dsaddr, char *buffer) {
 
 	if(errorcode!=0) {
 		fprintf(stderr,"Invalid header\n");
-		/*
-		switch(errorcode) {
-			case 1:
-				fprintf(stderr,"Invalid ARM9 address/length\n");
-				break;
-			case 2:
-				fprintf(stderr,"Invalid ARM7 address/length\n");
-				break;
-		}
-		*/
 		retval = 1;
 		goto error;
 	}
