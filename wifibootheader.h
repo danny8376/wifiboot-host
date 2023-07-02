@@ -5,6 +5,8 @@
 
 #include "little.h"
 
+#define NUM2BCD(n)  ((n<99) ? (((n/10)*0x10)|(n%10)) : 0x99)
+
 typedef struct {
     char id[8];
     char uploader[24];
@@ -21,7 +23,6 @@ typedef struct {
     unsigned_int banner_size;
     char reserved[0x5C];
 } infoBlock;
-
 
 #pragma pack()
 

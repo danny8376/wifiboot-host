@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <sys/time.h>
+#include <time.h>
 #include <stdint.h>
 #include <fcntl.h>
 
@@ -33,6 +34,14 @@ enum F_Type {
 	F_3DSX,
 	F_UNKNOWN
 };
+
+enum TimeOpt {
+	TO_NONE,
+	TO_LOCAL,
+	TO_UTC
+};
+
+TimeOpt time_opt = TO_NONE;
 
 //---------------------------------------------------------------------------------
 void shutdownSocket(int socket) {
@@ -216,7 +225,24 @@ infoBlock genInfoBlock(F_Type type, size_t logo_size, size_t icon_size, size_t b
 	infoBlock info = {0};
 	memcpy(info.id, "BootINFO", 8);
 	strcpy(info.uploader, "wifiboot-host v0");
-	// TODO: proper time?
+
+	if (time_opt != TO_NONE) {
+		time_t rawtime;
+		struct tm *timeinfo;
+		time(&rawtime);
+		if (time_opt == TO_UTC) timeinfo = gmtime(&rawtime);
+		else timeinfo = localtime(&rawtime);
+
+		info.time_sec = NUM2BCD(timeinfo->tm_sec);
+		info.time_min = NUM2BCD(timeinfo->tm_min);
+		info.time_hour = NUM2BCD(timeinfo->tm_hour);
+		info.time_dayofweek = NUM2BCD((timeinfo->tm_wday-1)%7);
+		info.time_day = NUM2BCD(timeinfo->tm_mday);
+		info.time_mon = NUM2BCD(timeinfo->tm_mon+1);
+		info.time_year = NUM2BCD(timeinfo->tm_year%100);
+		//info.time_century = NOT_USED???
+	}
+
 	info.logo_size = logo_size;
 	info.icon_size = IS_TYPE_3DS(type) ? icon_size : 0;
 	info.banner_size = IS_TYPE_3DS(type) ? banner_size : 0;
@@ -613,17 +639,33 @@ int main(int argc, char **argv) {
 	int c;
 
 	// wifiboot doesn't support address, it's mainly for 3dslink fallback
-	while ((c = getopt (argc, argv, "3a:f:")) != -1) {
+	while ((c = getopt (argc, argv, "3a:luf:")) != -1) {
 		switch(c) {
+			case '3':
+				fb3dslink = true;
+				break;
 			case 'a':
 				fprintf (stderr, "Warning: wifiboot doesn't support direct address, it's for 3dslink fallback only.\n");
 				address = optarg;
 				break;
+			case 'l':
+				if (time_opt == TO_NONE) {
+					time_opt = TO_LOCAL;
+				} else {
+					fprintf(stderr,"you can only use either -l or -u at once\n");
+					return 1;
+				}
+				break;
+			case 'u':
+				if (time_opt == TO_NONE) {
+					time_opt = TO_UTC;
+				} else {
+					fprintf(stderr,"you can only use either -l or -u at once\n");
+					return 1;
+				}
+				break;
 			case 'f':
 				footerfile = optarg;
-				break;
-			case '3':
-				fb3dslink = true;
 				break;
 			case '?':
 				if (optopt == 'a' || optopt == 'f')
@@ -638,8 +680,12 @@ int main(int argc, char **argv) {
 	
 	char *file = argv[optind];
 	if (file == NULL) {
-		//fprintf(stderr,"Usage: %s [-a address] file\n", argv[0]);
-		fprintf(stderr,"Usage: %s [-3] file\n", argv[0]);
+		fprintf(stderr,"Usage: %s [-3] [-a address] [-l] [-u] [-f file] file\n", argv[0]);
+		fprintf(stderr,"\t -3: fallback to 3dslink when failed\n");
+		fprintf(stderr,"\t -a: address, for 3dslink fallback only\n");
+		fprintf(stderr,"\t -l: use local time in info block\n");
+		fprintf(stderr,"\t -u: use utc time in info block\n");
+		fprintf(stderr,"\t -f: gba vc footer file, only used when sending gba rom\n");
 		return 1;
 	}
 	optind++;
